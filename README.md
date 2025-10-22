@@ -1,14 +1,14 @@
-Here is the final comprehensive README.md file, incorporating the critical data backup step and reflecting the advanced capabilities of the wsl-docker-repair.ps1 script.
 
-🔧 WSL2 and Docker Desktop Repair Script
+🔧** WSL2 and Docker Desktop Repair Script**
+**https://github.com/jimmi0623/Docker-wsl2-tool**
 
 This repository contains a comprehensive PowerShell script designed to diagnose and fix common startup errors for Windows Subsystem for Linux 2 (WSL2) and Docker Desktop on Windows 10 and 11.
 
-The script, wsl-docker-repair.ps1, is built by an expert system admin to be run with Administrator privileges, offering robust checks, automatic fixes, detailed logging, and, critically, automated data backup before any system modifications.
+The script, Docker-wsl2-tool, is to be run with Administrator privileges, offering robust checks, automatic fixes, detailed logging, and, critically, automated docker data backup (Volumes and Containers) before any system modifications.
 
 💾 Files
 
-    wsl-docker-repair.ps1: The main, comprehensive PowerShell repair and diagnostic script.
+    Docker-wsl2-tool: The main, comprehensive PowerShell repair and diagnostic script.
 
 ⚠️ Prerequisites
 
@@ -22,12 +22,12 @@ The script, wsl-docker-repair.ps1, is built by an expert system admin to be run 
 
 🚀 How to Use
 
-    Download the wsl-docker-repair.ps1 file.
+    Download the Docker-wsl2-tool file.
 
     Right-click on the script file and select "Run with PowerShell" or open a PowerShell window as Administrator and execute the script:
     PowerShell
 
-    .\wsl-docker-repair.ps1
+    .\Docker-wsl2-tool
 
     The script will execute the steps sequentially, providing real-time status updates and logging all actions.
 
@@ -59,4 +59,5 @@ Always restart your PC immediately after the script completes if it reports that
 
 🤝 Contribution
 
-Suggestions, issues, and pull requests are welcome! Feel free to help improve this utility.
+Suggestions, issues, and pull requests are welcome! Feel free to help improve this utility. 
+**https://github.com/jimmi0623/Docker-wsl2-tool**
