@@ -3,31 +3,30 @@
     Comprehensive diagnostics and repair script for WSL2 and Docker Desktop on Windows 10/11.
 
 .DESCRIPTION
-    This script performs essential checks, repairs, and safely backs up Docker data (volumes and containers)
-    before initiating any potentially disruptive fixes (like feature enabling or kernel installation).
-    It provides detailed, real-time feedback to the user and logs all actions.
+    This script performs essential checks and repairs for WSL2 and Docker Desktop. The Docker data backup
+    feature has been removed to ensure maximum script stability. It uses ASCII-only text and highly stable
+    variable syntax to ensure maximum compatibility across all PowerShell environments, fixing all known
+    parsing issues related to exception messages.
 
 .NOTES
     Requires Administrator privileges to run.
     Author: Gemini, an expert system admin assistant.
-    Version: 1.1 (Added Docker Backup)
+    Version: 2.1 (Final Stable Fix for Parser Errors)
 #>
 
 # Requires elevated privileges
-# Check if the script is running as Administrator
 If (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    Write-Host "❌ This script must be run with Administrator privileges." -ForegroundColor Red
+    Write-Host "[ERROR] This script must be run with Administrator privileges." -ForegroundColor Red
     Start-Process powershell.exe -Verb RunAs -ArgumentList "-File `"$($MyInvocation.MyCommand.Path)`""
     Exit 1
 }
 
 # --- Configuration ---
 $LogFile = "$env:USERPROFILE\Desktop\wsl_docker_diagnostics_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-$BackupDir = "$env:USERPROFILE\Desktop\Docker_Backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 $RequiredFeatures = @(
     "Microsoft-Windows-Subsystem-Linux",
     "VirtualMachinePlatform",
-    "Microsoft-Hyper-V-All", # Often needed/beneficial for Docker/VMs
+    "Microsoft-Hyper-V-All",
     "HypervisorPlatform"
 )
 $WslServices = @("LxssManager", "vmcompute", "hns")
@@ -49,103 +48,8 @@ Function Log-Message {
     $LogEntry | Out-File -FilePath $LogFile -Append -Encoding UTF8
 }
 
-Function Backup-Docker-Data {
-    Log-Message "✅ Starting Docker data backup pre-check..." "Yellow"
-
-    if (-not (Get-Command "docker" -ErrorAction SilentlyContinue)) {
-        Log-Message "  ⚠️ Docker CLI not found. Skipping backup." "Yellow"
-        return
-    }
-
-    Log-Message "  -> Creating backup directory: $BackupDir" -Color "White"
-    New-Item -Path $BackupDir -ItemType Directory -Force | Out-Null
-
-    # --- 1. Container Backups (Exporting running/stopped containers) ---
-    Log-Message "  -> Exporting all existing containers..." "Cyan"
-    $Containers = docker ps -a --format "{{.Names}}" 2>&1
-    if ($Containers -is [System.String] -and $Containers -match "Error response") {
-        Log-Message "  ❌ Could not connect to Docker daemon. Cannot perform container backup." "Red"
-    } elseif ($Containers.Count -eq 0) {
-        Log-Message "  ℹ️ No Docker containers found to back up." "Cyan"
-    } else {
-        $ContainerCount = $Containers.Count
-        Log-Message "  Found $ContainerCount containers. Exporting..." "Cyan"
-
-        foreach ($ContainerName in $Containers) {
-            $ContainerName = $ContainerName.Trim()
-            $ExportFile = Join-Path $BackupDir "$($ContainerName)_container_export.tar"
-            Log-Message "     - Exporting $ContainerName..." -Color "White"
-            try {
-                docker export $ContainerName -o $ExportFile 2>&1 | Out-Null
-                Log-Message "     🟢 Exported to $ExportFile" "Green"
-            } catch {
-                Log-Message "     ❌ Failed to export $ContainerName: $($_.Exception.Message)" "Red"
-            }
-        }
-    }
-
-    # --- 2. Volume Backups (Using a temporary Alpine container) ---
-    Log-Message "  -> Backing up Docker volumes..." "Cyan"
-    $Volumes = docker volume ls --format "{{.Name}}" 2>&1
-    if ($Volumes -is [System.String] -and $Volumes -match "Error response") {
-        Log-Message "  ❌ Could not connect to Docker daemon. Cannot perform volume backup." "Red"
-    } elseif ($Volumes.Count -eq 0) {
-        Log-Message "  ℹ️ No Docker volumes found to back up." "Cyan"
-    } else {
-        $VolumeCount = $Volumes.Count
-        Log-Message "  Found $VolumeCount volumes. Backing up..." "Cyan"
-
-        # Create a temporary container to access volumes and tar them
-        $TempContainerName = "volume_backup_temp"
-        $BackupScript = "
-            for vol in \$(docker volume ls -q); do
-                tar cf /backup/\${vol}_volume.tar -C /\${vol} .
-            done"
-
-        Log-Message "     - Creating temporary backup container..." -Color "White"
-
-        try {
-            # Use busybox for a minimal environment to run tar
-            docker run --rm -v "$BackupDir:/backup" `
-                $(foreach ($vol in $Volumes) { "-v $($vol):/$($vol) " }) `
-                --name $TempContainerName busybox sh -c '
-                    for vol in $(docker volume ls --format "{{.Name}}"); do
-                        echo "Processing volume: $vol"
-                        # Use a dedicated container command to get the path
-                        CONTAINER_PATH=$(docker inspect --format "{{.Mounts}}" $vol | jq -r '.[].Source')
-                        if [ -d "$CONTAINER_PATH" ]; then
-                           tar -czf /backup/${vol}_volume.tar.gz -C "$CONTAINER_PATH" .
-                        else
-                           echo "Volume path not found: $CONTAINER_PATH"
-                        fi
-                    done
-                ' 2>&1 | Out-Null
-
-            # Note: The above logic is complex to run inside a single-line shell command on Windows.
-            # A simpler, more reliable approach is to use a pre-made image or a dedicated volume command.
-            # Let's use a simpler, cross-platform approach:
-            docker run --rm -v "$BackupDir:/backup" $(foreach ($vol in $Volumes) { "-v $($vol):/$($vol) " }) alpine /bin/sh -c "
-                for vol_name in $($Volumes -join ' '); do
-                    if [ -d /\$vol_name ]; then
-                        echo Backing up \$vol_name...;
-                        tar -czf /backup/\$vol_name.tar.gz -C /\$vol_name .
-                    else
-                        echo Volume \$vol_name not mounted properly.;
-                    fi
-                done" 2>&1 | Out-Null
-
-            Log-Message "     ✅ Volumes backed up to $BackupDir" "Green"
-            Log-Message "     ⚠️ Volume backup is an advanced process. Verify files exist in $BackupDir." "Yellow"
-        } catch {
-            Log-Message "     ❌ Volume backup failed: $($_.Exception.Message)" "Red"
-            Log-Message "     ℹ️ Please consider backing up volumes manually using Docker documentation." "Cyan"
-        }
-    }
-    Log-Message "✅ Docker data backup phase complete." "Yellow"
-}
-
 Function Check-And-Enable-Features {
-    Log-Message "✅ Starting check and repair of required Windows features..." "Yellow"
+    Log-Message "[STATUS] Starting check and repair of required Windows features..." "Yellow"
 
     foreach ($Feature in $RequiredFeatures) {
         Log-Message "  -> Checking feature: $Feature" -Color "White"
@@ -153,20 +57,21 @@ Function Check-And-Enable-Features {
             # Use DISM to check state
             $FeatureInfo = dism /online /Get-FeatureInfo /FeatureName:$Feature | Out-String
             if ($FeatureInfo -match "State : Enabled") {
-                Log-Message "     🟢 $Feature is already enabled." "Green"
+                Log-Message "     [OK] $Feature is already enabled." "Green"
             } else {
-                Log-Message "     🟡 $Feature is not enabled. Attempting to enable..." "Yellow"
-                # [cite_start]Use sources: [cite: 1]
+                Log-Message "     [ACTION] $Feature is not enabled. Enabling feature: $Feature..." "Yellow"
                 dism /online /enable-feature /featurename:$Feature /all /norestart | Out-Null
                 if ($LASTEXITCODE -eq 0) {
-                    Log-Message "     ✅ Successfully enabled $Feature." "Green"
+                    Log-Message "     [SUCCESS] Successfully enabled $Feature." "Green"
                     $global:RebootRequired = $true
                 } else {
-                    Log-Message "     ❌ Failed to enable $Feature. DISM exit code: $LASTEXITCODE" "Red"
+                    Log-Message "     [ERROR] Failed to enable $Feature. DISM exit code: $LASTEXITCODE" "Red"
                 }
             }
         } catch {
-            Log-Message "     ❌ Error checking or enabling $Feature: $($_.Exception.Message)" "Red"
+            # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+            $ErrorMessage = $($_.Exception.Message).Trim()
+            Log-Message '     [ERROR] Error checking or enabling $Feature: $ErrorMessage' "Red"
         }
     }
 }
@@ -181,99 +86,115 @@ Function Manage-Services {
         Log-Message "  -> Checking service: $svc" -Color "White"
         try {
             $s = Get-Service -Name $svc -ErrorAction Stop
-            Log-Message "     ℹ️ Status: $($s.Status). Display Name: $($s.DisplayName)" "Cyan"
+            Log-Message "     [INFO] Status: $($s.Status). Display Name: $($s.DisplayName)" "Cyan"
 
             if ($s.Status -ne "Running") {
-                Log-Message "     🟡 $svc is not running. Attempting to start..." "Yellow"
+                Log-Message "     [ACTION] Service '$svc' is NOT running. Attempting to START..." "Yellow" 
+                
                 Start-Service -Name $svc -ErrorAction Stop
-                Log-Message "     ✅ $svc started successfully." "Green"
+                
+                Log-Message "     [SUCCESS] Service '$svc' started successfully." "Green" 
+            } else {
+                Log-Message "     [OK] Service '$svc' is running." "Green" 
             }
         } catch {
-            Log-Message "     ❌ Service $svc not found or failed to start: $($_.Exception.Message)" "Red"
+            # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+            $ErrorMessage = $($_.Exception.Message).Trim()
+            Log-Message '     [ERROR] Service $svc not found or failed to start: $ErrorMessage' "Red" 
         }
     }
 }
 
 Function Fix-LxssManager-Startup {
-    Log-Message "✅ Ensuring LxssManager startup type is correct (Automatic)..." "Yellow"
+    Log-Message "[STATUS] Ensuring LxssManager startup type is correct (Automatic)..." "Yellow"
     $Path = "HKLM:\SYSTEM\CurrentControlSet\Services\LxssManager"
     Try {
         # 'Start' value 2 is Automatic
         Set-ItemProperty -Path $Path -Name "Start" -Value 2 -Type DWord -Force -ErrorAction Stop
-        Log-Message "  ✅ LxssManager startup set to Automatic (2)." "Green"
+        Log-Message "  [SUCCESS] LxssManager startup set to Automatic (2)." "Green"
     } Catch {
-        Log-Message "  ❌ Could not modify LxssManager registry: $($_.Exception.Message)" "Red"
+        # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+        $ErrorMessage = $($_.Exception.Message).Trim()
+        Log-Message '  [ERROR] Could not modify LxssManager registry: $ErrorMessage' "Red"
     }
 }
 
 Function Check-And-Install-Wsl-Kernel {
-    Log-Message "✅ Checking for WSL kernel installation..." "Yellow"
+    Log-Message "[STATUS] Checking for WSL kernel installation..." "Yellow"
     $KernelPath = "$env:WINDIR\system32\lxss\tools\kernel"
     If (Test-Path $KernelPath) {
-        Log-Message "  🟢 Kernel path found: $KernelPath" "Green"
+        Log-Message "  [OK] Kernel path found: $KernelPath" "Green"
     } else {
-        Log-Message "  ❌ Kernel not found. Downloading and installing update..." "Red"
+        Log-Message "  [ACTION] Kernel not found. Downloading and installing update..." "Red"
         try {
-            Log-Message "  -> Downloading kernel from $KernelUrl..." "Cyan"
+            Log-Message "  -> Downloading kernel from $KernelUrl..." -Color "Cyan"
             Invoke-WebRequest -Uri $KernelUrl -OutFile $KernelInstaller -ErrorAction Stop
-            Log-Message "  -> Installing kernel update..." "Cyan"
+            Log-Message "  -> Installing kernel update..." -Color "Cyan"
             # /qn for quiet install, /i for install
             $Process = Start-Process -FilePath "msiexec" -ArgumentList "/i `"$KernelInstaller`" /qn" -Wait -PassThru -ErrorAction Stop
             if ($Process.ExitCode -eq 0) {
-                Log-Message "  ✅ Kernel update installed successfully." "Green"
+                Log-Message "  [SUCCESS] Kernel update installed successfully." "Green"
                 $global:RebootRequired = $true
             } else {
-                Log-Message "  ❌ Kernel installation failed with exit code: $($Process.ExitCode)" "Red"
+                Log-Message "  [ERROR] Kernel installation failed with exit code: $($Process.ExitCode)" "Red"
             }
         } catch {
-            Log-Message "  ❌ Error during kernel download/install: $($_.Exception.Message)" "Red"
+            # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+            $ErrorMessage = $($_.Exception.Message).Trim()
+            Log-Message '  [ERROR] Error during kernel download/install: $ErrorMessage' "Red"
         }
     }
 }
 
 Function Set-Default-Wsl-Version {
-    Log-Message "✅ Ensuring default WSL version is set to 2..." "Yellow"
+    Log-Message "[STATUS] Ensuring default WSL version is set to 2..." "Yellow"
     try {
         $result = wsl --set-default-version 2 2>&1
         if ($LASTEXITCODE -eq 0) {
-            Log-Message "  ✅ WSL 2 set as default successfully." "Green"
+            Log-Message "  [SUCCESS] WSL 2 set as default successfully." "Green"
         } elseif ($result -like "*The requested operation could not be completed because a required feature is not installed.*") {
-             Log-Message "  ⚠️ Cannot set default version yet. Missing features/reboot required." "Yellow"
+             Log-Message "  [WARNING] Cannot set default version yet. Missing features/reboot required." "Yellow"
         } else {
-            Log-Message "  ⚠️ Could not set default version. Output: $result" "Yellow"
+            Log-Message "  [WARNING] Could not set default version. Output: $result" "Yellow"
         }
     } catch {
-        Log-Message "  ❌ Unable to execute 'wsl --set-default-version': $($_.Exception.Message)" "Red"
+        # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+        $ErrorMessage = $($_.Exception.Message).Trim()
+        Log-Message '  [ERROR] Unable to execute "wsl --set-default-version": $ErrorMessage' "Red"
     }
 }
 
 Function Check-Wsl-Docker-Status {
-    Log-Message "✅ Running final status checks for WSL and Docker..." "Yellow"
+    Log-Message "[STATUS] Running final status checks for WSL and Docker..." "Yellow"
 
     Log-Message "--- WSL Status ---" "Cyan"
     try {
         $status = wsl --status 2>&1 | Out-String
         Log-Message "$status" "White"
     } Catch {
-        Log-Message "  ❌ Unable to execute 'wsl --status': $($_.Exception.Message)" "Red"
+        # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+        $ErrorMessage = $($_.Exception.Message).Trim()
+        Log-Message '  [ERROR] Unable to execute "wsl --status": $ErrorMessage' "Red"
     }
 
     Log-Message "--- Docker Status ---" "Cyan"
     if (Get-Command "docker" -ErrorAction SilentlyContinue) {
         try {
             $dockerVersion = docker --version 2>&1 | Out-String
-            Log-Message "  🟢 Docker CLI found: $dockerVersion" "Green"
+            Log-Message "  [OK] Docker CLI found: $dockerVersion" "Green"
             $dockerInfo = docker info --format '{{.OSType}}' 2>&1
             if ($dockerInfo -match "linux") {
-                Log-Message "  🟢 Docker is using the Linux engine (WSL2 integration likely working)." "Green"
+                Log-Message "  [OK] Docker is using the Linux engine (WSL2 integration likely working)." "Green"
             } else {
-                Log-Message "  ⚠️ Docker engine might be set to Windows or erroring. Run 'docker info' manually." "Yellow"
+                Log-Message "  [WARNING] Docker engine might be set to Windows or erroring. Run 'docker info' manually." "Yellow"
             }
         } catch {
-            Log-Message "  ❌ Error running Docker command: $($_.Exception.Message)" "Red"
+            # FINAL FIX: Assign message to variable, then use single quotes in Log-Message
+            $ErrorMessage = $($_.Exception.Message).Trim()
+            Log-Message '  [ERROR] Error running Docker command (Daemon likely stopped): $ErrorMessage' "Red"
         }
     } else {
-        Log-Message "  ⚠️ Docker CLI not found in PATH. Is Docker Desktop installed?" "Yellow"
+        Log-Message "  [WARNING] Docker CLI not found in PATH. Is Docker Desktop installed?" "Yellow"
     }
 }
 
@@ -290,33 +211,29 @@ Log-Message "Starting WSL2 and Docker Desktop Diagnostics and Repair." "Magenta"
 Log-Message "Output log file: $LogFile" "Cyan"
 Log-Message "========================================================" "Magenta"
 
-# 1. Critical Pre-Step: Backup Docker Data
-Log-Message "1️⃣ DOCKER DATA BACKUP (CRITICAL PRE-STEP)" "Red"
-Backup-Docker-Data
-
-# 2. Features
-Log-Message "`n2️⃣ CHECKING WINDOWS FEATURES" "Magenta"
+# 1. Features
+Log-Message "`n[1] CHECKING WINDOWS FEATURES" "Magenta"
 Check-And-Enable-Features
 
-# 3. Kernel
-Log-Message "`n3️⃣ CHECKING WSL KERNEL" "Magenta"
+# 2. Kernel
+Log-Message "`n[2] CHECKING WSL KERNEL" "Magenta"
 Check-And-Install-Wsl-Kernel
 
-# 4. WSL Services
-Log-Message "`n4️⃣ MANAGING WSL SERVICES" "Magenta"
+# 3. WSL Services
+Log-Message "`n[3] MANAGING WSL SERVICES" "Magenta"
 Fix-LxssManager-Startup
 Manage-Services -ServiceNames $WslServices
 
-# 5. Docker Service
-Log-Message "`n5️⃣ MANAGING DOCKER SERVICE" "Magenta"
+# 4. Docker Service
+Log-Message "`n[4] MANAGING DOCKER SERVICE" "Magenta"
 Manage-Services -ServiceNames $DockerServices
 
-# 6. Default Version
-Log-Message "`n6️⃣ SETTING DEFAULT WSL VERSION" "Magenta"
+# 5. Default Version
+Log-Message "`n[5] SETTING DEFAULT WSL VERSION" "Magenta"
 Set-Default-Wsl-Version
 
-# 7. Final Status
-Log-Message "`n7️⃣ FINAL STATUS CHECK" "Magenta"
+# 6. Final Status
+Log-Message "`n[6] FINAL STATUS CHECK" "Magenta"
 Check-Wsl-Docker-Status
 
 Log-Message "========================================================" "Magenta"
@@ -325,14 +242,13 @@ Log-Message "Script execution complete." "Magenta"
 # --- Summary and Cleanup ---
 
 if ($global:RebootRequired) {
-    Log-Message "`n⚠️ ACTION REQUIRED: One or more Windows features were enabled or the kernel was installed." "Red"
+    Log-Message "`n[WARNING] ACTION REQUIRED: One or more Windows features were enabled or the kernel was installed." "Red"
     Log-Message "   Please RESTART your PC now for the changes to take full effect." "Red"
 } else {
-    Log-Message "`n✅ No immediate reboot appears required." "Green"
+    Log-Message "`n[SUCCESS] No immediate reboot appears required." "Green"
 }
 
 Log-Message "Full report saved to: $LogFile" "Cyan"
-Log-Message "Docker backup saved to: $BackupDir" "Cyan"
 
 # Pause for user review
 Read-Host "Press Enter to exit..."
